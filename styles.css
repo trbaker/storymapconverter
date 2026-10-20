@@ -45,9 +45,11 @@ img { max-width: 100%; }
 
 header { display: grid; gap: 6px; }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+h1 .version { font: 500 13px var(--font-mono); letter-spacing: 0.02em; color: var(--muted); margin-left: 6px; white-space: nowrap; vertical-align: 0.35em; }
 .brand .logo { width: clamp(38px, 5vw, 46px); height: auto; flex: none; overflow: visible; }
 h1 { font: 700 clamp(1.7rem, 3.4vw, 2.3rem)/1.1 var(--font-display); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
 .lede { margin: 0; color: var(--muted); max-width: 68ch; }
+.lede.after-note { margin-top: 1.55em; }
 .credit { margin: -2px 0 4px; font-size: 13px; color: var(--muted); }
 .credit a { color: var(--accent); font-weight: 600; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .credit a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
