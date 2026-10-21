@@ -1,11 +1,13 @@
-/* StoryMap Converter, steps 2 and 3: convert the classic story to ArcGIS StoryMaps JSON and create it in ArcGIS Online. */
+/* Classic StoryMap Extractor, steps 2 and 3: convert the classic story to ArcGIS StoryMaps JSON and create it in ArcGIS Online. */
 /* ===== Steps 2 and 3: convert to ArcGIS StoryMaps JSON and create the item =====
    Item format follows Esri's ArcGIS API for Python (arcgis.apps.storymap):
    a "StoryMap" item, story JSON saved as a draft_<ms>.json resource, smstatus* type keywords,
    and on publish the same JSON in the item data plus a published_data.json resource. */
 (() => {
   const $ = id => document.getElementById(id);
-  const APP_KEYWORD = 'classic-storymap-converter';
+  const APP_KEYWORD = 'classic-storymap-extractor';
+  // shown in place of a web map that has been deleted or is no longer shared
+  const PLACEHOLDER_IMG = 'https://trbaker.github.io/storymapconverter/placeholder/image.png';
   const FALLBACK_SM_VERSION = '24.12';
   let classic = null;     // step 1 result
   let built = null;       // { story, outline, warnings, coverSrc }
@@ -502,7 +504,7 @@
     }
     if (Array.isArray(d.bookmarks)) d.bookmarks = d.bookmarks.map(b => b && b.extent && !b.viewpoint ? Object.assign({}, b, { viewpoint: { targetGeometry: b.extent } }) : b);
     d.version = WEBMAP_VERSION;
-    d.authoringApp = 'StoryMapConverter';
+    d.authoringApp = 'ClassicStoryMapExtractor';
     d.authoringAppVersion = '1.1';
     return { data: d, issues };
   }
@@ -629,6 +631,26 @@
     return intro && intro.title ? strip(intro.title) : '';
   }
 
+  // The classic story's author, for the new story's byline: the story item's owner, shown by their public
+  // full name when their profile shares it (otherwise their username). A self-hosted story has no item, so
+  // the owner of its web maps is used when they all belong to one person.
+  async function classicAuthor(ctx) {
+    const rest = ctx.base || 'https://www.arcgis.com/sharing/rest';
+    let owner = (ctx.item && ctx.item.owner) || '';
+    if (!owner) {
+      const v = (ctx.data && ctx.data.values) || {};
+      const ids = idsIn(v.webmap).concat(idsIn(v.webmaps), ...classicEntries(ctx).map(e => e.media && e.media.kind === 'webmap' ? [String(e.media.id).toLowerCase()] : []))
+        .filter((x, i, a) => a.indexOf(x) === i).slice(0, 12);
+      const owners = new Set((await Promise.all(ids.map(webmapInfo))).filter(Boolean).map(i => i.item.owner).filter(Boolean));
+      if (owners.size === 1) owner = [...owners][0];
+    }
+    if (!owner) return '';
+    try {
+      const u = await getJson(`${rest}/community/users/${encodeURIComponent(owner)}?f=json`);
+      return (u.fullName || '').trim() || owner;
+    } catch (_) { return owner; } // private profile
+  }
+
   // ---------- build the story JSON ----------
   async function buildStory(ctx, opts) {
     const id = makeIds();
@@ -700,16 +722,7 @@
       return out;
     };
     const expressFiles = {}, expressBases = [];
-    const standins = new Map(); // unreadable web map id -> number of blank express maps put in its place
-    // every extent the classic story saved for each map, so a map block without one can use another entry's view
-    const savedExtents = new Map();
-    (function walk(o) {
-      if (!o || typeof o !== 'object') return;
-      if (Array.isArray(o)) { o.forEach(walk); return; }
-      if (typeof o.id === 'string' && /^[0-9a-f]{32}$/i.test(o.id) && o.extent && typeof o.extent.xmin === 'number' && !savedExtents.has(o.id.toLowerCase())) savedExtents.set(o.id.toLowerCase(), o.extent);
-      Object.values(o).forEach(walk);
-    })(ctx.data && ctx.data.values);
-    const knownExtent = mid => savedExtents.get(String(mid).toLowerCase()) || null;
+    const standins = new Map(); // unreadable web map id -> number of placeholder images put in its place
     let expressSeq = 0, expressCount = 0, expressNotes = 0;
     const mapNode = async (m, size) => {
       const info = await webmapInfo(m.id);
@@ -736,23 +749,9 @@
         }
       }
       if (!info && opts.standin) {
-        // The web map is deleted or private, so a linked map block would stay blank. Put an empty express map
-        // at the classic view on a topographic basemap instead, ready for the author to redraw the places.
-        const view = computeView(null, Object.assign({}, m, { extent: m.extent || knownExtent(m.id) }));
-        if (view.extent) {
-          const file = `expressmap_${Date.now() + expressSeq++}.json`;
-          const r = id('r');
-          resources[r] = { type: 'expressmap', data: { itemId: file } };
-          expressFiles[file] = {
-            basemap: { type: 'name', value: 'topographic' }, drawings: {}, groups: [{ drawingIds: [], title: '' }], popups: {},
-            viewPlacement: 'extent', layerDefinitions: [], visConfigs: [],
-            extent: view.extent, scale: view.viewpoint.scale, center: view.center
-          };
-          standins.set(m.id, (standins.get(m.id) || 0) + 1);
-          const n = add('expressmap', { map: r, caption: m.caption || '', basemap: 'topographic' });
-          if (size) nodes[n].config = { size };
-          return n;
-        }
+        // The web map is deleted or private, so a linked map block would stay blank: show the placeholder graphic instead
+        standins.set(m.id, (standins.get(m.id) || 0) + 1);
+        return imageNode(PLACEHOLDER_IMG, 'Map unavailable', m.caption || '', size);
       }
       const r = id('r');
       // Matches what the StoryMaps builder writes: a "default" map resource, and the starting view
@@ -813,6 +812,11 @@
       return { node, subtype, videos, basemap: baseRes ? { resourceId: baseRes, dropLayer: t.sourceLayer } : null };
     };
     const swipeNode = async (m, size) => {
+      // a swipe needs both maps; if either can't be read, the placeholder image takes the swipe's place
+      if (opts.standin) {
+        const [li, ri] = await Promise.all([webmapInfo(m.left.id), webmapInfo(m.right.id)]);
+        if (!li || !ri) return mapNode({ id: !li ? m.left.id : m.right.id, caption: m.caption || '' }, size);
+      }
       const left = await mapNode({ id: m.left.id, extent: m.extent, layers: m.left.layers });
       const right = await mapNode({ id: m.right.id, extent: m.extent, layers: m.right.layers });
       // both sides open at exactly the same view, taken from the left map
@@ -961,7 +965,8 @@
     const warm = m => { if (!m) return; if (m.kind === 'image') imageSize(m.src); if (m.kind === 'webmap') webmapInfo(m.id); if (m.kind === 'swipe') { webmapInfo(m.left.id); webmapInfo(m.right.id); } };
     prepared.forEach(p => { warm(p.media); p.blocks.forEach(warm); (p.actions || []).forEach(a => a && a.media && warm(classicMedia(a.media))); });
     cascadeParts.forEach(part => { (part.blocks || []).forEach(warm); (part.slides || []).forEach(sl => { warm(sl.media); sl.blocks.forEach(warm); }); });
-    if (swipe) notes.push(`Classic swipe became a StoryMaps swipe of the live ${swipe.swiped.length ? 'map, with its swiped layers on the left only' : 'maps'}${swipe.bookmarks.length ? `, plus ${swipe.bookmarks.length} bookmarked view${swipe.bookmarks.length > 1 ? 's' : ''}` : ''}.`);
+    const swipeReadable = swipe && (await webmapInfo(swipe.left.id)) && (await webmapInfo(swipe.right.id));
+    if (swipe && swipeReadable) notes.push(`Classic swipe became a StoryMaps swipe of the live ${swipe.swiped.length ? 'map, with its swiped layers on the left only' : 'maps'}${swipe.bookmarks.length ? `, plus ${swipe.bookmarks.length} bookmarked view${swipe.bookmarks.length > 1 ? 's' : ''}` : ''}.`);
     if (liveMaps) notes.push(`${liveMaps} embedded map viewer${liveMaps > 1 ? 's or apps' : ' or app'} became live map${liveMaps > 1 ? 's' : ''}.`);
 
     // ---- the story's own main map, when no entry already shows it (Story Map Basic: the whole story) ----
@@ -976,6 +981,7 @@
       const legend = v.legend === true || v.legend === 'true';
       const mains = (await Promise.all(extra.map(async mid => {
         const info = await webmapInfo(mid);
+        if (!info && opts.standin) return { title: 'Map', blocks: [], media: { kind: 'webmap', id: mid }, isMain: true, placeholder: true, actions: [] };
         if (!info || !/^Web (Map|Scene)$/.test(info.item.type || '')) {
           warnings.push(`The story's main map (${mid}) couldn't be read. It may have been deleted or made private, so it's left out.`);
           return null;
@@ -985,7 +991,8 @@
       }))).filter(Boolean);
       if (mains.length) {
         prepared.unshift(...mains);
-        notes.push(`The story's main map${mains.length > 1 ? 's open' : ' opens'} the story as a live map${legend ? ', with its legend' : ''}.`);
+        const live = mains.filter(x => !x.placeholder).length; // unreadable ones show the placeholder image
+        if (live) notes.push(`The story's main map${live > 1 ? 's open' : ' opens'} the story as a live map${legend ? ', with its legend' : ''}.`);
       }
     }
 
@@ -1129,7 +1136,7 @@
     const summary = strip(v.subtitle) || (cascadeCover && cascadeCover.subtitle) || (crowd && strip(crowd.intro.subtitle)) || ctx.item.snippet || '';
     const cover = add('storycover', {
       type: coverSrc ? 'full' : 'minimal', title, summary,
-      byline: (session && (session.user.fullName || session.user.username)) || '', titlePanelPosition: 'start'
+      byline: opts.byline || '', titlePanelPosition: 'start'
     });
     if (coverSrc) nodes[cover].children = [await imageNode(coverSrc, '', '')];
     outline.push({ k: 'Cover', t: title, c: coverSrc ? 'full · image' : 'minimal' });
@@ -1237,7 +1244,7 @@
         outline.push({ k: String(i).padStart(2, '0'), t: p.title || p.outlineTitle || '(untitled)', c: describe(p) });
       }
     }
-    for (const [mid, n] of standins) warnings.push(`Web map ${mid} can't be read: it has been deleted or is no longer shared publicly, and the classic story saved only its ID and views, not its data. So its ${n} map block${n > 1 ? 's are' : ' is an'} empty express map${n > 1 ? 's' : ''} at the classic view${n > 1 ? 's' : ''} on a topographic basemap, ready to redraw the places in the builder. If the map's owner shares it again, convert again with "Replace maps that can't be read" unticked to link it live.`);
+    for (const [mid, n] of standins) warnings.push(`Web map ${mid} can't be read: it has been deleted or is no longer shared publicly, and the classic story saved only its ID and views, not its data. So its ${n} map block${n > 1 ? 's show' : ' shows'} the placeholder image instead. If the map's owner shares it again, convert again with "Replace maps that can't be read" unticked to link it live.`);
     if (expressCount) notes.push(`${expressCount} classic map${expressCount > 1 ? 's' : ''} made only of sketched notes became ${expressCount > 1 ? 'express maps' : 'an express map'} with ${expressNotes} editable drawing${expressNotes > 1 ? 's' : ''} and their popups. ${expressCount > 1 ? 'Their basemaps are copies' : 'Its basemap is a copy'} of the classic web map without the note layers, made when you create the story.`);
     if (inlineActions || buttonActions) notes.push(`${inlineActions + buttonActions} classic text link${inlineActions + buttonActions > 1 ? 's' : ''} became map actions: ${inlineActions} on the slide's map, ${buttonActions} as ${buttonActions === 1 ? 'a button that shows' : 'buttons that show'} other media.`);
     if (scrollActionMedia) notes.push(`${scrollActionMedia} map${scrollActionMedia > 1 ? 's and media' : ' or media item'} that classic text links showed ${scrollActionMedia > 1 ? 'were' : 'was'} added after ${scrollActionMedia > 1 ? 'their sections' : 'its section'}. Choose the sidecar layout to keep them as map actions.`);
@@ -1286,7 +1293,8 @@
       express: $('optExpress').checked,
       standin: $('optStandin').checked,
       backlink: $('optBacklink').checked,
-      title: $('cTitle').value.trim()
+      title: $('cTitle').value.trim(),
+      byline: $('cByline').value.trim()
     };
   }
   async function rebuild() {
@@ -1325,12 +1333,22 @@
   document.querySelectorAll('input[name="layout"]').forEach(r => r.addEventListener('change', scheduleRebuild));
   ['optDup', 'optBacklink', 'optMainMap', 'optModernize', 'optExpress', 'optStandin'].forEach(id => $(id).addEventListener('change', scheduleRebuild));
   $('cTitle').addEventListener('input', scheduleRebuild);
+  let bylineEdited = false;
+  $('cByline').addEventListener('input', () => { bylineEdited = true; scheduleRebuild(); });
 
   window.addEventListener('classic-read', e => {
     classic = e.detail;
     built = null;
     mapCache.clear();
     $('cTitle').value = classicTitle(classic) || classic.item.title || '';
+    bylineEdited = false;
+    $('cByline').value = '';
+    const forStory = classic;
+    classicAuthor(classic).then(name => {
+      if (classic !== forStory || bylineEdited || !name) return;
+      $('cByline').value = name;
+      scheduleRebuild();
+    });
     $('result').hidden = true;
     $('pubLog').replaceChildren();
     $('convertPanel').hidden = false;

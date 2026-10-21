@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="logo.svg" alt="StoryMap Converter icon" width="96" height="96">
+<img src="logo.svg" alt="Classic StoryMap Extractor icon" width="96" height="96">
 
-# StoryMap Converter
+# Classic StoryMap Extractor
 
 **Bring retired classic Esri Story Maps back to life as modern ArcGIS StoryMaps, from ArcGIS Online or self-hosted on any website.**
 
@@ -21,7 +21,7 @@
 
 Esri has retired the classic Story Map templates. Open an old Map Series or Map Journal link today and you get an **Item Replacement** notice instead of the story.
 
-The story itself isn't gone. Its titles, text, images, maps and videos are still stored in the item's data on ArcGIS Online. StoryMap Converter reads that data and rebuilds the story as a new ArcGIS StoryMap in your own account, in a few clicks and without retyping anything.
+The story itself isn't gone. Its titles, text, images, maps and videos are still stored in the item's data on ArcGIS Online. Classic StoryMap Extractor reads that data and rebuilds the story as a new ArcGIS StoryMap in your own account, in a few clicks and without retyping anything.
 
 ## How it works
 
@@ -46,6 +46,7 @@ flowchart LR
 | From the classic story | Becomes in ArcGIS StoryMaps |
 |---|---|
 | Story title and summary | Story cover. The first image found becomes a full-bleed cover. |
+| The classic story's author | The cover byline: the story owner's full name from their public profile, or their username when the profile is private. Self-hosted stories use the owner of their web maps. It's filled in under **Byline**, where you can change it |
 | Each entry or section | A heading and section, or a sidecar slide |
 | Entry image | Image block, copied into the new story when the host allows it |
 | Entry web map | Web map block, keeping that entry's map extent and which layers were on |
@@ -104,7 +105,7 @@ Maps are rebuilt, never pictured, and their data is always pointed to rather tha
 | A current web map | The same web map, opened at the classic entry's view with the classic layer visibility |
 | An old web map (1.x format, untyped or `http://` layers, a Bing basemap) | An updated copy of the web map in your account, as described below |
 | A web map made only of sketched notes (Map Notes points, lines, areas and text) | An **express map**. Its drawings, popups and groups are written to the story's `expressmap_<ms>.json` file, the same format the StoryMaps builder saves. Its basemap is a copy of the classic web map without the notes |
-| A web map that's deleted or no longer shared | An empty express map at the classic view on a topographic basemap, so the slide still has a working map to redraw the places on. The classic story saved only the map's ID and views, never its data. Untick **Replace maps that can't be read** to keep linking the original instead |
+| A web map that's deleted or no longer shared | A placeholder image saying the map is unavailable, in the same spot. The classic story saved only the map's ID and views, never its data. Untick **Replace maps that can't be read** to keep linking the original instead |
 | A tour's or Shortlist's web map | The guided tour's map: a copy without the places layer, so places aren't drawn twice |
 
 Imported data (CSV, shapefile or GPX layers stored in the map), maps with service layers, multi-part shapes, and maps with more than 200 notes stay traditional web maps, which keep their fields, popups and styles. Untick **Rebuild maps made only of sketched notes as express maps** to keep every map as a web map.
@@ -130,7 +131,7 @@ Maps owned by someone else can't be changed. If one is shared more narrowly than
 
 1. Keep all the files together in one folder.
 2. Open **`index.html`** in Chrome, Edge, Firefox or Safari. Double-clicking it works.
-3. The example story loads straight away. Paste your own classic story link, item ID or self-hosted story address to convert it.
+3. Paste a classic story link, item ID or self-hosted story address, and choose **Read story**.
 
 If an organization restricts which websites may read its content, requests from a desktop file can be refused. Serve the folder from a simple local web server instead:
 
@@ -156,7 +157,7 @@ Or put the folder on any web host, which is also where Google Analytics starts c
 
 - **Your password goes only to ArcGIS Online**, which swaps it for a sign-in token. The token lives in the page's memory and is gone when you close the tab. Nothing is saved to disk.
 - The app talks only to ArcGIS Online, StoryMaps, the website of a self-hosted story you paste, the image hosts the classic story uses, Google Fonts and Google Analytics. There is no other server behind it.
-- A self-hosted story's settings are read as plain data. None of that website's code runs inside the converter.
+- A self-hosted story's settings are read as plain data. None of that website's code runs inside the app.
 
 ## Good to know
 
