@@ -895,6 +895,8 @@
   async function run(ev, files) {
     ev && ev.preventDefault && ev.preventDefault();
     $('log').replaceChildren();
+    $('results').hidden = true; // the previous story's results go away while the next one is read
+    window.dispatchEvent(new CustomEvent('classic-reset'));
     $('go').disabled = true;
     try {
       const raw = $('url').value.trim();

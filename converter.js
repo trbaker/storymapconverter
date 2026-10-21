@@ -1397,6 +1397,23 @@
   let bylineEdited = false;
   $('cByline').addEventListener('input', () => { bylineEdited = true; scheduleRebuild(); });
 
+  // "Read story" starts over: everything made for the previous story is cleared (the sign-in is kept)
+  window.addEventListener('classic-reset', () => {
+    classic = null;
+    built = null;
+    buildSeq++; // drop any conversion still running for the previous story
+    clearTimeout(rebuildTimer);
+    $('outline').replaceChildren();
+    $('convLog').replaceChildren();
+    $('pubLog').replaceChildren();
+    $('result').replaceChildren();
+    $('result').hidden = true;
+    $('cTitle').value = '';
+    $('cByline').value = '';
+    $('convertPanel').hidden = true;
+    $('publishPanel').hidden = true;
+    setStep(1);
+  });
   window.addEventListener('classic-read', e => {
     classic = e.detail;
     built = null;
