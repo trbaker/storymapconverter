@@ -514,7 +514,7 @@
   // item resource expressmap_<ms>.json with basemap, drawings, groups, popups, viewPlacement, extent, scale, center;
   // drawing types POINT_REGULAR, POLYLINE, POLYGON and TEXT_LEADERLINE (one node, data.content).
   const EXPRESS_MAX = 200;
-  const NOTE_FIELDS = new Set(['objectid', 'fid', 'oid', 'typeid', 'visible', 'title', 'name', 'description', 'desc', 'comment', 'image_url', 'image_link_url', 'text', 'shape', 'shape_length', 'shape_area']);
+  const NOTE_FIELDS = new Set(['objectid', 'fid', 'oid', 'typeid', 'visible', 'title', 'name', 'description', 'desc', 'comment', 'image_url', 'image_link_url', 'text', 'date', 'shape', 'shape_length', 'shape_area']);
   const hexColor = c => Array.isArray(c) && c.length >= 3 && (c[3] === undefined || c[3] > 0)
     ? '#' + c.slice(0, 3).map(v => Math.max(0, Math.min(255, Math.round(+v || 0))).toString(16).padStart(2, '0')).join('') : null;
   function expressPlan(info, mapLayers, newId) {
@@ -700,6 +700,16 @@
       return out;
     };
     const expressFiles = {}, expressBases = [];
+    const standins = new Map(); // unreadable web map id -> number of blank express maps put in its place
+    // every extent the classic story saved for each map, so a map block without one can use another entry's view
+    const savedExtents = new Map();
+    (function walk(o) {
+      if (!o || typeof o !== 'object') return;
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      if (typeof o.id === 'string' && /^[0-9a-f]{32}$/i.test(o.id) && o.extent && typeof o.extent.xmin === 'number' && !savedExtents.has(o.id.toLowerCase())) savedExtents.set(o.id.toLowerCase(), o.extent);
+      Object.values(o).forEach(walk);
+    })(ctx.data && ctx.data.values);
+    const knownExtent = mid => savedExtents.get(String(mid).toLowerCase()) || null;
     let expressSeq = 0, expressCount = 0, expressNotes = 0;
     const mapNode = async (m, size) => {
       const info = await webmapInfo(m.id);
@@ -721,6 +731,25 @@
           // the builder repeats the basemap on the block (seen in every express map saved since 2025)
           const n = add('expressmap', { map: r, caption: m.caption || '', basemap: m.id });
           expressBases.push({ file, node: n, webmap: m.id, dropLayers: plan.dropLayers });
+          if (size) nodes[n].config = { size };
+          return n;
+        }
+      }
+      if (!info && opts.standin) {
+        // The web map is deleted or private, so a linked map block would stay blank. Put an empty express map
+        // at the classic view on a topographic basemap instead, ready for the author to redraw the places.
+        const view = computeView(null, Object.assign({}, m, { extent: m.extent || knownExtent(m.id) }));
+        if (view.extent) {
+          const file = `expressmap_${Date.now() + expressSeq++}.json`;
+          const r = id('r');
+          resources[r] = { type: 'expressmap', data: { itemId: file } };
+          expressFiles[file] = {
+            basemap: { type: 'name', value: 'topographic' }, drawings: {}, groups: [{ drawingIds: [], title: '' }], popups: {},
+            viewPlacement: 'extent', layerDefinitions: [], visConfigs: [],
+            extent: view.extent, scale: view.viewpoint.scale, center: view.center
+          };
+          standins.set(m.id, (standins.get(m.id) || 0) + 1);
+          const n = add('expressmap', { map: r, caption: m.caption || '', basemap: 'topographic' });
           if (size) nodes[n].config = { size };
           return n;
         }
@@ -1208,6 +1237,7 @@
         outline.push({ k: String(i).padStart(2, '0'), t: p.title || p.outlineTitle || '(untitled)', c: describe(p) });
       }
     }
+    for (const [mid, n] of standins) warnings.push(`Web map ${mid} can't be read: it has been deleted or is no longer shared publicly, and the classic story saved only its ID and views, not its data. So its ${n} map block${n > 1 ? 's are' : ' is an'} empty express map${n > 1 ? 's' : ''} at the classic view${n > 1 ? 's' : ''} on a topographic basemap, ready to redraw the places in the builder. If the map's owner shares it again, convert again with "Replace maps that can't be read" unticked to link it live.`);
     if (expressCount) notes.push(`${expressCount} classic map${expressCount > 1 ? 's' : ''} made only of sketched notes became ${expressCount > 1 ? 'express maps' : 'an express map'} with ${expressNotes} editable drawing${expressNotes > 1 ? 's' : ''} and their popups. ${expressCount > 1 ? 'Their basemaps are copies' : 'Its basemap is a copy'} of the classic web map without the note layers, made when you create the story.`);
     if (inlineActions || buttonActions) notes.push(`${inlineActions + buttonActions} classic text link${inlineActions + buttonActions > 1 ? 's' : ''} became map actions: ${inlineActions} on the slide's map, ${buttonActions} as ${buttonActions === 1 ? 'a button that shows' : 'buttons that show'} other media.`);
     if (scrollActionMedia) notes.push(`${scrollActionMedia} map${scrollActionMedia > 1 ? 's and media' : ' or media item'} that classic text links showed ${scrollActionMedia > 1 ? 'were' : 'was'} added after ${scrollActionMedia > 1 ? 'their sections' : 'its section'}. Choose the sidecar layout to keep them as map actions.`);
@@ -1254,6 +1284,7 @@
       mainMap: $('optMainMap').checked,
       modernize: $('optModernize').checked,
       express: $('optExpress').checked,
+      standin: $('optStandin').checked,
       backlink: $('optBacklink').checked,
       title: $('cTitle').value.trim()
     };
@@ -1278,12 +1309,13 @@
     const parts = convOpts().layout === 'sidecar'
       ? ((n1) => `${n1} slide${n1 === 1 ? '' : 's'}`)(nodeList.filter(x => x.type === 'immersive-slide').length)
       : ((n1) => `${n1} section${n1 === 1 ? '' : 's'}`)(result.outline.filter(o => /^\d/.test(o.k)).length);
-    const maps = nodeList.filter(x => x.type === 'webmap' || x.type === 'expressmap').length;
+    const maps = nodeList.filter(x => x.type === 'webmap').length;
+    const xmaps = nodeList.filter(x => x.type === 'expressmap').length;
     const swipes = nodeList.filter(x => x.type === 'swipe').length;
     const tours = nodeList.filter(x => x.type === 'tour');
     const tourPlaces = tours.reduce((n, t) => n + ((t.data && t.data.places) || []).length, 0);
     const pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-    logTo('convLog', `${tourPlaces ? `${tours.length > 1 ? pl(tours.length, 'guided tour') + ' with' : 'Guided tour with'} ${pl(tourPlaces, 'place')}, ` : `${parts}, `}${maps} live map${maps === 1 ? '' : 's'}${swipes ? ` (${swipes} swipe${swipes > 1 ? 's' : ''})` : ''}, ${n} story blocks in all.`, 'ok');
+    logTo('convLog', `${tourPlaces ? `${tours.length > 1 ? pl(tours.length, 'guided tour') + ' with' : 'Guided tour with'} ${pl(tourPlaces, 'place')}, ` : `${parts}, `}${maps || !xmaps ? `${maps} live map${maps === 1 ? '' : 's'}` : ''}${maps && xmaps ? ', ' : ''}${xmaps ? `${xmaps} express map${xmaps === 1 ? '' : 's'}` : ''}${swipes ? ` (${swipes} swipe${swipes > 1 ? 's' : ''})` : ''}, ${n} story blocks in all.`, 'ok');
     (result.notes || []).forEach(t => logTo('convLog', t, 'ok'));
     result.warnings.forEach(w => logTo('convLog', w, 'warn'));
     return result;
@@ -1291,7 +1323,7 @@
   let rebuildTimer;
   const scheduleRebuild = () => { clearTimeout(rebuildTimer); rebuildTimer = setTimeout(rebuild, 150); };
   document.querySelectorAll('input[name="layout"]').forEach(r => r.addEventListener('change', scheduleRebuild));
-  ['optDup', 'optBacklink', 'optMainMap', 'optModernize', 'optExpress'].forEach(id => $(id).addEventListener('change', scheduleRebuild));
+  ['optDup', 'optBacklink', 'optMainMap', 'optModernize', 'optExpress', 'optStandin'].forEach(id => $(id).addEventListener('change', scheduleRebuild));
   $('cTitle').addEventListener('input', scheduleRebuild);
 
   window.addEventListener('classic-read', e => {

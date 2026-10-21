@@ -104,6 +104,7 @@ Maps are rebuilt, never pictured, and their data is always pointed to rather tha
 | A current web map | The same web map, opened at the classic entry's view with the classic layer visibility |
 | An old web map (1.x format, untyped or `http://` layers, a Bing basemap) | An updated copy of the web map in your account, as described below |
 | A web map made only of sketched notes (Map Notes points, lines, areas and text) | An **express map**. Its drawings, popups and groups are written to the story's `expressmap_<ms>.json` file, the same format the StoryMaps builder saves. Its basemap is a copy of the classic web map without the notes |
+| A web map that's deleted or no longer shared | An empty express map at the classic view on a topographic basemap, so the slide still has a working map to redraw the places on. The classic story saved only the map's ID and views, never its data. Untick **Replace maps that can't be read** to keep linking the original instead |
 | A tour's or Shortlist's web map | The guided tour's map: a copy without the places layer, so places aren't drawn twice |
 
 Imported data (CSV, shapefile or GPX layers stored in the map), maps with service layers, multi-part shapes, and maps with more than 200 notes stay traditional web maps, which keep their fields, popups and styles. Untick **Rebuild maps made only of sketched notes as express maps** to keep every map as a web map.
