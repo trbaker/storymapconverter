@@ -1,11 +1,13 @@
-/* StoryMap Converter, steps 2 and 3: convert the classic story to ArcGIS StoryMaps JSON and create it in ArcGIS Online. */
+/* Classic StoryMap Extractor, steps 2 and 3: convert the classic story to ArcGIS StoryMaps JSON and create it in ArcGIS Online. */
 /* ===== Steps 2 and 3: convert to ArcGIS StoryMaps JSON and create the item =====
    Item format follows Esri's ArcGIS API for Python (arcgis.apps.storymap):
    a "StoryMap" item, story JSON saved as a draft_<ms>.json resource, smstatus* type keywords,
    and on publish the same JSON in the item data plus a published_data.json resource. */
 (() => {
   const $ = id => document.getElementById(id);
-  const APP_KEYWORD = 'classic-storymap-converter';
+  const APP_KEYWORD = 'classic-storymap-extractor';
+  // shown in place of a web map that has been deleted or is no longer shared
+  const PLACEHOLDER_IMG = 'https://trbaker.github.io/storymapconverter/placeholder/image.png';
   const FALLBACK_SM_VERSION = '24.12';
   let classic = null;     // step 1 result
   let built = null;       // { story, outline, warnings, coverSrc }
@@ -193,12 +195,21 @@
     const doc = new DOMParser().parseFromString('<div id="root">' + (html || '') + '</div>', 'text/html');
     const out = [];
     let buf = [];
-    const pushText = (style, h, joinBreaks) => {
+    const pushText = (style, h, joinBreaks, align) => {
       const parts = joinBreaks ? [h.split(BR).join(' ')] : splitBreaks(h);
       for (const p of parts) {
         const clean = tidy(p);
-        if (strip(clean)) out.push({ kind: 'text', style, html: clean });
+        if (strip(clean)) out.push(Object.assign({ kind: 'text', style, html: clean }, align ? { align } : {}));
       }
+    };
+    // centred or right-aligned text keeps its alignment (text-align, align="", or a <center> around it), as in Esri's helper
+    const alignOf = el => {
+      for (let e = el; e && e.id !== 'root'; e = e.parentElement) {
+        const st = (e.getAttribute && (e.getAttribute('style') || '')).match(/text-align\s*:\s*(left|center|right|justify)/i);
+        const a = st ? st[1] : (e.getAttribute && e.getAttribute('align')) || (e.tagName === 'CENTER' ? 'center' : '');
+        if (a) return /center/i.test(a) ? 'center' : /right/i.test(a) ? 'end' : '';
+      }
+      return '';
     };
     const media = el => {
       const list = el.matches && el.matches(MEDIA_SEL) ? [el] : Array.from(el.querySelectorAll ? el.querySelectorAll(MEDIA_SEL) : []);
@@ -232,8 +243,19 @@
           continue;
         }
         flush();
+        if (t === 'FIGURE' && n.querySelector('figcaption')) {
+          // a figure's caption becomes the caption of its image
+          const cap = strip(n.querySelector('figcaption').textContent);
+          const c = n.cloneNode(true);
+          c.querySelectorAll('figcaption').forEach(x => x.remove());
+          const start = out.length;
+          walk(c); flush();
+          const img = out.slice(start).find(x => x.kind === 'image');
+          if (img && cap) img.caption = cap; else if (cap) pushText('paragraph', esc(cap));
+          continue;
+        }
         if (CONTAINERS.test(t)) { walk(n); flush(); continue; }
-        if (/^H[1-6]$/.test(t)) { pushText(+t[1] <= 3 ? 'h3' : 'h4', inline(n), true); out.push(...media(n)); continue; }
+        if (/^H[1-6]$/.test(t)) { pushText(+t[1] <= 3 ? 'h3' : 'h4', inline(n), true, alignOf(n)); out.push(...media(n)); continue; }
         if (t === 'BLOCKQUOTE') { pushText('quote', inline(n), true); out.push(...media(n)); continue; }
         if (t === 'UL' || t === 'OL') {
           const items = Array.from(n.querySelectorAll('li')).map(li => {
@@ -254,7 +276,7 @@
           continue;
         }
         if (t === 'HR') { out.push({ kind: 'separator' }); continue; }
-        pushText('paragraph', inline(n)); // P, PRE, FIGCAPTION, DL
+        pushText('paragraph', inline(n), false, alignOf(n)); // P, PRE, FIGCAPTION, DL
         out.push(...media(n));
       }
     };
@@ -268,7 +290,8 @@
   function classicMedia(m) {
     if (!m || !m.type) return null;
     const b = m[m.type] || {};
-    if (m.type === 'webmap' && b.id) return { kind: 'webmap', id: b.id, extent: b.extent, layers: b.layers, caption: strip(b.caption || '') };
+    // classic Journal/Series maps could show their legend (media.webmap.legend.enable), as Esri's helper carries over
+    if (m.type === 'webmap' && b.id) return { kind: 'webmap', id: b.id, extent: b.extent, layers: b.layers, caption: strip(b.caption || ''), showLegend: !!(b.legend && b.legend.enable) };
     // Cascade web scenes: the same map block, which reads the scene's item type and camera
     if (m.type === 'webscene' && b.id) return { kind: 'webmap', id: b.id, caption: strip(b.caption || '') };
     if (m.type === 'image' && abs(b.url)) return { kind: 'image', src: abs(b.url), alt: b.altText || b.alt || '', caption: strip(b.caption || '') };
@@ -502,7 +525,7 @@
     }
     if (Array.isArray(d.bookmarks)) d.bookmarks = d.bookmarks.map(b => b && b.extent && !b.viewpoint ? Object.assign({}, b, { viewpoint: { targetGeometry: b.extent } }) : b);
     d.version = WEBMAP_VERSION;
-    d.authoringApp = 'StoryMapConverter';
+    d.authoringApp = 'ClassicStoryMapExtractor';
     d.authoringAppVersion = '1.1';
     return { data: d, issues };
   }
@@ -629,6 +652,26 @@
     return intro && intro.title ? strip(intro.title) : '';
   }
 
+  // The classic story's author, for the new story's byline: the story item's owner, shown by their public
+  // full name when their profile shares it (otherwise their username). A self-hosted story has no item, so
+  // the owner of its web maps is used when they all belong to one person.
+  async function classicAuthor(ctx) {
+    const rest = ctx.base || 'https://www.arcgis.com/sharing/rest';
+    let owner = (ctx.item && ctx.item.owner) || '';
+    if (!owner) {
+      const v = (ctx.data && ctx.data.values) || {};
+      const ids = idsIn(v.webmap).concat(idsIn(v.webmaps), ...classicEntries(ctx).map(e => e.media && e.media.kind === 'webmap' ? [String(e.media.id).toLowerCase()] : []))
+        .filter((x, i, a) => a.indexOf(x) === i).slice(0, 12);
+      const owners = new Set((await Promise.all(ids.map(webmapInfo))).filter(Boolean).map(i => i.item.owner).filter(Boolean));
+      if (owners.size === 1) owner = [...owners][0];
+    }
+    if (!owner) return '';
+    try {
+      const u = await getJson(`${rest}/community/users/${encodeURIComponent(owner)}?f=json`);
+      return (u.fullName || '').trim() || owner;
+    } catch (_) { return owner; } // private profile
+  }
+
   // ---------- build the story JSON ----------
   async function buildStory(ctx, opts) {
     const id = makeIds();
@@ -660,7 +703,7 @@
         // Same shape Esri's Python API writes for a video URL: an inline "video" embed of the provider's player address
         return add('embed', {
           url: v.embed, embedType: 'video', caption: caption || '', alt: `${v.provider} video`,
-          display: 'inline', aspectRatio: 1.778, addedAsEmbedCode: true
+          display: 'inline', aspectRatio: 1.778, addedAsEmbedCode: true, isEmbedSupported: true
         });
       }
       url = linkUrl(url);
@@ -700,16 +743,7 @@
       return out;
     };
     const expressFiles = {}, expressBases = [];
-    const standins = new Map(); // unreadable web map id -> number of blank express maps put in its place
-    // every extent the classic story saved for each map, so a map block without one can use another entry's view
-    const savedExtents = new Map();
-    (function walk(o) {
-      if (!o || typeof o !== 'object') return;
-      if (Array.isArray(o)) { o.forEach(walk); return; }
-      if (typeof o.id === 'string' && /^[0-9a-f]{32}$/i.test(o.id) && o.extent && typeof o.extent.xmin === 'number' && !savedExtents.has(o.id.toLowerCase())) savedExtents.set(o.id.toLowerCase(), o.extent);
-      Object.values(o).forEach(walk);
-    })(ctx.data && ctx.data.values);
-    const knownExtent = mid => savedExtents.get(String(mid).toLowerCase()) || null;
+    const standins = new Map(); // unreadable web map id -> number of placeholder images put in its place
     let expressSeq = 0, expressCount = 0, expressNotes = 0;
     const mapNode = async (m, size) => {
       const info = await webmapInfo(m.id);
@@ -736,23 +770,9 @@
         }
       }
       if (!info && opts.standin) {
-        // The web map is deleted or private, so a linked map block would stay blank. Put an empty express map
-        // at the classic view on a topographic basemap instead, ready for the author to redraw the places.
-        const view = computeView(null, Object.assign({}, m, { extent: m.extent || knownExtent(m.id) }));
-        if (view.extent) {
-          const file = `expressmap_${Date.now() + expressSeq++}.json`;
-          const r = id('r');
-          resources[r] = { type: 'expressmap', data: { itemId: file } };
-          expressFiles[file] = {
-            basemap: { type: 'name', value: 'topographic' }, drawings: {}, groups: [{ drawingIds: [], title: '' }], popups: {},
-            viewPlacement: 'extent', layerDefinitions: [], visConfigs: [],
-            extent: view.extent, scale: view.viewpoint.scale, center: view.center
-          };
-          standins.set(m.id, (standins.get(m.id) || 0) + 1);
-          const n = add('expressmap', { map: r, caption: m.caption || '', basemap: 'topographic' });
-          if (size) nodes[n].config = { size };
-          return n;
-        }
+        // The web map is deleted or private, so a linked map block would stay blank: show the placeholder graphic instead
+        standins.set(m.id, (standins.get(m.id) || 0) + 1);
+        return imageNode(PLACEHOLDER_IMG, 'Map unavailable', m.caption || '', size);
       }
       const r = id('r');
       // Matches what the StoryMaps builder writes: a "default" map resource, and the starting view
@@ -813,6 +833,11 @@
       return { node, subtype, videos, basemap: baseRes ? { resourceId: baseRes, dropLayer: t.sourceLayer } : null };
     };
     const swipeNode = async (m, size) => {
+      // a swipe needs both maps; if either can't be read, the placeholder image takes the swipe's place
+      if (opts.standin) {
+        const [li, ri] = await Promise.all([webmapInfo(m.left.id), webmapInfo(m.right.id)]);
+        if (!li || !ri) return mapNode({ id: !li ? m.left.id : m.right.id, caption: m.caption || '' }, size);
+      }
       const left = await mapNode({ id: m.left.id, extent: m.extent, layers: m.left.layers });
       const right = await mapNode({ id: m.right.id, extent: m.extent, layers: m.right.layers });
       // both sides open at exactly the same view, taken from the left map
@@ -849,10 +874,19 @@
         if (b.kind === 'text') {
           const k = add('text', { type: b.style, text: '' });
           nodes[k].data.text = b.html.replace(ACTION_RE, (m0, aid, inner) => (actx && actx(aid, inner, k)) || inner);
+          if (b.align && b.align !== 'start') nodes[k].data.textAlignment = b.align;
           ids.push(k);
         }
         else if (b.kind === 'image') ids.push(await imageNode(b.src, b.alt, b.caption || '', 'standard'));
-        else if (b.kind === 'embed') ids.push(embedNode(b.url, '', b.video ? 'inline' : 'card'));
+        else if (b.kind === 'gallery') {
+          // same node Esri's Python API writes: "gallery" with up to 12 image children, jigsaw layout
+          for (let i = 0; i < b.images.length; i += 12) {
+            const kids = [];
+            for (const im of b.images.slice(i, i + 12)) kids.push(await imageNode(im.src, im.alt, im.caption || ''));
+            ids.push(kids.length === 1 ? kids[0] : add('gallery', { galleryLayout: 'jigsaw', caption: i === 0 ? esc(b.caption || '') : '', alt: b.alt || '' }, { children: kids }));
+          }
+        }
+        else if (b.kind === 'embed') ids.push(embedNode(b.url, b.caption || '', b.video ? 'inline' : 'card'));
         else if (b.kind === 'webmap') ids.push(await mapNode(b, 'wide'));
         else if (b.kind === 'separator') ids.push(add('separator'));
       }
@@ -860,6 +894,7 @@
     };
 
     const v = (ctx.data && ctx.data.values) || {};
+    const creditKids = []; // nodes for the story's credits area
     const actions = [];    // story-level map actions (sidecar slides)
     const notes = [];
     const tourBases = [];  // tour map resources whose web map gets a copy without its places layer at create time
@@ -902,9 +937,11 @@
       for (const bl of list || []) {
         if (!bl || !bl.type) continue;
         if (bl.type === 'text') out.push(...htmlToBlocks(bl.text && bl.text.value));
-        else if (bl.type === 'image-gallery') ((bl['image-gallery'] || {}).images || []).forEach(im => {
-          if (abs(im.url)) out.push({ kind: 'image', src: abs(im.url), alt: im.altText || '', caption: strip(im.caption || '') });
-        });
+        else if (bl.type === 'image-gallery') {
+          const g = bl['image-gallery'] || {};
+          const images = (g.images || []).filter(im => abs(im.url)).map(im => ({ src: abs(im.url), alt: im.altText || '', caption: strip(im.caption || '') }));
+          if (images.length) out.push({ kind: 'gallery', images, caption: strip(g.caption || ''), alt: g.altText || '' });
+        }
         else { const m = classicMedia(bl); if (m) out.push(m); else if (bl.type === 'audio') skippedAudio++; }
       }
       return out;
@@ -919,7 +956,8 @@
           if (cascadeCover.media && cascadeCover.media.kind !== 'image') cascadeParts.push({ kind: 'blocks', blocks: [cascadeCover.media] });
         } else if (sec.type === 'title') {
           const t = strip(typeof fg.title === 'string' ? fg.title : (fg.title && fg.title.value) || '');
-          if (t) cascadeParts.push({ kind: 'heading', text: t });
+          const bg = classicMedia(sec.background);
+          if (t) cascadeParts.push({ kind: 'heading', text: t, image: bg && bg.kind === 'image' ? bg : null });
         } else if (sec.type === 'sequence') {
           const blocks = cBlocks(fg.blocks);
           if (blocks.length) cascadeParts.push({ kind: 'blocks', blocks });
@@ -931,8 +969,11 @@
           }).filter(sl => sl.media || sl.blocks.length || sl.title);
           if (slides.length) cascadeParts.push({ kind: 'sidecar', slides });
         } else if (sec.type === 'credits') {
+          // panel blocks hold the credits text; a panel's "credits" list holds attributions {label, source, link}
           const blocks = [].concat(...(fg.panels || []).map(pn => cBlocks(pn.blocks)));
-          if (blocks.length) cascadeParts.push({ kind: 'credits', blocks });
+          const attributions = [].concat(...(fg.panels || []).map(pn => Array.isArray(pn.credits) ? pn.credits : []))
+            .filter(c => c && (c.label || c.source)).map(c => ({ content: strip(c.label || ''), source: strip(c.source || ''), link: abs(c.link || '') }));
+          if (blocks.length || attributions.length) cascadeParts.push({ kind: 'credits', blocks, attributions });
         }
       }
       if (skippedAudio) warnings.push(`${skippedAudio} audio block${skippedAudio > 1 ? 's' : ''} from the Cascade story ${skippedAudio > 1 ? 'were' : 'was'} left out; ArcGIS StoryMaps audio has to be uploaded in the builder.`);
@@ -958,10 +999,11 @@
       if (part.slides) for (const sl of part.slides) { sl.media = await toMap(sl.media); sl.blocks = await mapAll(sl.blocks); }
     }
     // start every image-size and map lookup at once instead of one by one
-    const warm = m => { if (!m) return; if (m.kind === 'image') imageSize(m.src); if (m.kind === 'webmap') webmapInfo(m.id); if (m.kind === 'swipe') { webmapInfo(m.left.id); webmapInfo(m.right.id); } };
+    const warm = m => { if (!m) return; if (m.kind === 'gallery') m.images.forEach(i => imageSize(i.src)); if (m.kind === 'image') imageSize(m.src); if (m.kind === 'webmap') webmapInfo(m.id); if (m.kind === 'swipe') { webmapInfo(m.left.id); webmapInfo(m.right.id); } };
     prepared.forEach(p => { warm(p.media); p.blocks.forEach(warm); (p.actions || []).forEach(a => a && a.media && warm(classicMedia(a.media))); });
     cascadeParts.forEach(part => { (part.blocks || []).forEach(warm); (part.slides || []).forEach(sl => { warm(sl.media); sl.blocks.forEach(warm); }); });
-    if (swipe) notes.push(`Classic swipe became a StoryMaps swipe of the live ${swipe.swiped.length ? 'map, with its swiped layers on the left only' : 'maps'}${swipe.bookmarks.length ? `, plus ${swipe.bookmarks.length} bookmarked view${swipe.bookmarks.length > 1 ? 's' : ''}` : ''}.`);
+    const swipeReadable = swipe && (await webmapInfo(swipe.left.id)) && (await webmapInfo(swipe.right.id));
+    if (swipe && swipeReadable) notes.push(`Classic swipe became a StoryMaps swipe of the live ${swipe.swiped.length ? 'map, with its swiped layers on the left only' : 'maps'}${swipe.bookmarks.length ? `, plus ${swipe.bookmarks.length} bookmarked view${swipe.bookmarks.length > 1 ? 's' : ''}` : ''}.`);
     if (liveMaps) notes.push(`${liveMaps} embedded map viewer${liveMaps > 1 ? 's or apps' : ' or app'} became live map${liveMaps > 1 ? 's' : ''}.`);
 
     // ---- the story's own main map, when no entry already shows it (Story Map Basic: the whole story) ----
@@ -976,6 +1018,7 @@
       const legend = v.legend === true || v.legend === 'true';
       const mains = (await Promise.all(extra.map(async mid => {
         const info = await webmapInfo(mid);
+        if (!info && opts.standin) return { title: 'Map', blocks: [], media: { kind: 'webmap', id: mid }, isMain: true, placeholder: true, actions: [] };
         if (!info || !/^Web (Map|Scene)$/.test(info.item.type || '')) {
           warnings.push(`The story's main map (${mid}) couldn't be read. It may have been deleted or made private, so it's left out.`);
           return null;
@@ -985,7 +1028,8 @@
       }))).filter(Boolean);
       if (mains.length) {
         prepared.unshift(...mains);
-        notes.push(`The story's main map${mains.length > 1 ? 's open' : ' opens'} the story as a live map${legend ? ', with its legend' : ''}.`);
+        const live = mains.filter(x => !x.placeholder).length; // unreadable ones show the placeholder image
+        if (live) notes.push(`The story's main map${live > 1 ? 's open' : ' opens'} the story as a live map${legend ? ', with its legend' : ''}.`);
       }
     }
 
@@ -1122,6 +1166,8 @@
       for (const part of cascadeParts) {
         const b = (part.blocks || []).find(x => x.kind === 'image') || ((part.slides || []).map(sl => sl.media).find(x => x && x.kind === 'image'));
         if (b) return b.src;
+        const g = (part.blocks || []).find(x => x.kind === 'gallery');
+        if (g) return g.images[0].src;
       }
       return '';
     })();
@@ -1129,7 +1175,7 @@
     const summary = strip(v.subtitle) || (cascadeCover && cascadeCover.subtitle) || (crowd && strip(crowd.intro.subtitle)) || ctx.item.snippet || '';
     const cover = add('storycover', {
       type: coverSrc ? 'full' : 'minimal', title, summary,
-      byline: (session && (session.user.fullName || session.user.username)) || '', titlePanelPosition: 'start'
+      byline: opts.byline || '', titlePanelPosition: 'start'
     });
     if (coverSrc) nodes[cover].children = [await imageNode(coverSrc, '', '')];
     outline.push({ k: 'Cover', t: title, c: coverSrc ? 'full · image' : 'minimal' });
@@ -1197,7 +1243,17 @@
     if (cascade) {
       let k = 0;
       for (const part of cascadeParts) {
-        if (part.kind === 'heading') { body.push(add('text', { type: 'h2', text: esc(part.text) })); outline.push({ k: 'Title', t: part.text, c: 'heading' }); }
+        if (part.kind === 'heading') {
+          // as Esri's helper does: a centred heading, then the title's background image floated beside what follows, or a separator
+          const h = add('text', { type: 'h2', text: esc(part.text), textAlignment: 'center' });
+          body.push(h);
+          if (part.image) {
+            const im = await imageNode(part.image.src, part.image.alt, part.image.caption || '');
+            nodes[im].config = { size: 'float', floatAlignment: 'start' };
+            body.push(im);
+          } else body.push(add('separator'));
+          outline.push({ k: 'Title', t: part.text, c: part.image ? 'centred heading · image' : 'centred heading' });
+        }
         else if (part.kind === 'blocks') {
           body.push(...await blockNodes(part.blocks));
           const firstText = part.blocks.find(x => x.kind === 'text');
@@ -1210,8 +1266,16 @@
             outline.push({ k: String(++k).padStart(2, '0'), t: part.slides.find(sl => sl.title)?.title || 'Immersive section', c: `sidecar, ${sc.count} slide${sc.count > 1 ? 's' : ''}${maps ? ` · ${maps} map${maps > 1 ? 's' : ''}` : ''}` });
           }
         } else if (part.kind === 'credits') {
-          body.push(add('text', { type: 'h3', text: 'Credits' }), ...await blockNodes(part.blocks));
-          outline.push({ k: 'Credits', t: 'Credits', c: describe({ blocks: part.blocks }) });
+          // into the story's own credits area: text as paragraphs, attributions as "content | attribution" lines
+          for (const b of part.blocks) {
+            if (b.kind === 'text') creditKids.push(add('text', { type: 'paragraph', text: b.html }));
+            else body.push(...await blockNodes([b])); // media in the credits section stays in the story
+          }
+          for (const a of part.attributions) {
+            const who = a.link ? `<a href="${escAttr(a.link)}" rel="noopener noreferrer" target="_blank">${esc(a.source || a.link)}</a>` : esc(a.source);
+            creditKids.push(add('attribution', { content: esc(a.content), attribution: who }));
+          }
+          outline.push({ k: 'Credits', t: 'Credits', c: `${part.blocks.length ? describe({ blocks: part.blocks }) + ' · ' : ''}${part.attributions.length} attribution${part.attributions.length === 1 ? '' : 's'}` });
         }
       }
       const views = cascadeParts.filter(x => x.kind === 'sidecar').reduce((n, x) => n + x.slides.length, 0);
@@ -1237,7 +1301,7 @@
         outline.push({ k: String(i).padStart(2, '0'), t: p.title || p.outlineTitle || '(untitled)', c: describe(p) });
       }
     }
-    for (const [mid, n] of standins) warnings.push(`Web map ${mid} can't be read: it has been deleted or is no longer shared publicly, and the classic story saved only its ID and views, not its data. So its ${n} map block${n > 1 ? 's are' : ' is an'} empty express map${n > 1 ? 's' : ''} at the classic view${n > 1 ? 's' : ''} on a topographic basemap, ready to redraw the places in the builder. If the map's owner shares it again, convert again with "Replace maps that can't be read" unticked to link it live.`);
+    for (const [mid, n] of standins) warnings.push(`Web map ${mid} can't be read: it has been deleted or is no longer shared publicly, and the classic story saved only its ID and views, not its data. So its ${n} map block${n > 1 ? 's show' : ' shows'} the placeholder image instead. If the map's owner shares it again, convert again with "Replace maps that can't be read" unticked to link it live.`);
     if (expressCount) notes.push(`${expressCount} classic map${expressCount > 1 ? 's' : ''} made only of sketched notes became ${expressCount > 1 ? 'express maps' : 'an express map'} with ${expressNotes} editable drawing${expressNotes > 1 ? 's' : ''} and their popups. ${expressCount > 1 ? 'Their basemaps are copies' : 'Its basemap is a copy'} of the classic web map without the note layers, made when you create the story.`);
     if (inlineActions || buttonActions) notes.push(`${inlineActions + buttonActions} classic text link${inlineActions + buttonActions > 1 ? 's' : ''} became map actions: ${inlineActions} on the slide's map, ${buttonActions} as ${buttonActions === 1 ? 'a button that shows' : 'buttons that show'} other media.`);
     if (scrollActionMedia) notes.push(`${scrollActionMedia} map${scrollActionMedia > 1 ? 's and media' : ' or media item'} that classic text links showed ${scrollActionMedia > 1 ? 'were' : 'was'} added after ${scrollActionMedia > 1 ? 'their sections' : 'its section'}. Choose the sidecar layout to keep them as map actions.`);
@@ -1261,9 +1325,13 @@
       else warnings.push(`${old.length} web map${old.length > 1 ? 's use' : ' uses'} the old web map format and may not load in ArcGIS StoryMaps: ${list}.`);
     }
 
-    const credits = add('credits');
+    const credits = add('credits', undefined, creditKids.length ? { children: creditKids } : {});
     const theme = id('r');
-    resources[theme] = { type: 'story-theme', data: { themeId: 'summit', themeBaseVariableOverrides: {} } };
+    // dark classic stories get the dark theme, as in Esri's helper: Cascade "dark", Journal/Series "black"
+    const major = String((((v.settings || {}).theme || {}).colors || {}).themeMajor || '');
+    const themeId = /^(dark|black)/i.test(major) ? 'obsidian' : 'summit';
+    resources[theme] = { type: 'story-theme', data: { themeId, themeBaseVariableOverrides: {} } };
+    if (themeId === 'obsidian') notes.push('The classic story used a dark theme, so the new story uses the dark Obsidian theme.');
     const root = id('n');
     nodes[root] = {
       type: 'story',
@@ -1286,7 +1354,8 @@
       express: $('optExpress').checked,
       standin: $('optStandin').checked,
       backlink: $('optBacklink').checked,
-      title: $('cTitle').value.trim()
+      title: $('cTitle').value.trim(),
+      byline: $('cByline').value.trim()
     };
   }
   async function rebuild() {
@@ -1325,12 +1394,22 @@
   document.querySelectorAll('input[name="layout"]').forEach(r => r.addEventListener('change', scheduleRebuild));
   ['optDup', 'optBacklink', 'optMainMap', 'optModernize', 'optExpress', 'optStandin'].forEach(id => $(id).addEventListener('change', scheduleRebuild));
   $('cTitle').addEventListener('input', scheduleRebuild);
+  let bylineEdited = false;
+  $('cByline').addEventListener('input', () => { bylineEdited = true; scheduleRebuild(); });
 
   window.addEventListener('classic-read', e => {
     classic = e.detail;
     built = null;
     mapCache.clear();
     $('cTitle').value = classicTitle(classic) || classic.item.title || '';
+    bylineEdited = false;
+    $('cByline').value = '';
+    const forStory = classic;
+    classicAuthor(classic).then(name => {
+      if (classic !== forStory || bylineEdited || !name) return;
+      $('cByline').value = name;
+      scheduleRebuild();
+    });
     $('result').hidden = true;
     $('pubLog').replaceChildren();
     $('convertPanel').hidden = false;
@@ -1465,7 +1544,8 @@
       const userPath = `/content/users/${encodeURIComponent(user)}`;
       const version = await smVersion();
       const draft = `draft_${Date.now()}.json`;
-      const base = ['arcgis-storymaps', 'StoryMap', 'Web Application', `smversiondraft:${version}`, `smdraftresourceid:${draft}`];
+      // smconverted:<tool> marks a story converted from classic, as Esri's helper does (smconverted:converter-v2)
+      const base = ['arcgis-storymaps', 'StoryMap', 'Web Application', `smversiondraft:${version}`, `smdraftresourceid:${draft}`, `smconverted:${APP_KEYWORD}`];
       const draftKeywords = [...base, 'smstatusdraft', `smeditorapp:${APP_KEYWORD}`];
       const it = classic.item;
       const shareParams = { everyone: access === 'public', org: access !== 'private', groups: '' };

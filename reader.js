@@ -1,4 +1,4 @@
-/* StoryMap Converter, step 1: read a classic Esri Story Map, from ArcGIS or a self-hosted website, and export its content as a text file.
+/* Classic StoryMap Extractor, step 1: read a classic Esri Story Map, from ArcGIS or a self-hosted website, and export its content as a text file.
    Signals step 2 with a 'classic-read' event on window. */
 (() => {
   const $ = id => document.getElementById(id);
@@ -38,11 +38,16 @@
       for (const [k, name] of TEMPLATES) if (pathLower.includes('/' + k)) { templateHint = name; break; }
       if (!portalOverride) {
         if (/storymaps\.arcgis\.com$/i.test(u.hostname)) bases.push('https://www.arcgis.com/sharing/rest');
-        else bases.push(u.origin + prefix + '/sharing/rest');
+        else {
+          // Old story links often start with http://. ArcGIS Online and current portals only answer on https,
+          // and a secure page can't call an http address anyway, so try https first.
+          bases.push('https://' + u.host + prefix + '/sharing/rest');
+          if (u.protocol === 'http:' && location.protocol !== 'https:') bases.push('http://' + u.host + prefix + '/sharing/rest');
+        }
       }
     } catch (_) { /* bare ID */ }
     if (!bases.includes('https://www.arcgis.com/sharing/rest')) bases.push('https://www.arcgis.com/sharing/rest');
-    return { id, bases, pageUrl, templateHint };
+    return { id, bases: bases.filter((b, i, a) => a.indexOf(b) === i), pageUrl, templateHint };
   }
 
   async function getJson(url, token) {
@@ -360,7 +365,11 @@
     if (Array.isArray(v.tabs)) // Shortlist
       return { label: 'Tabs', list: pick(v.tabs, t => ({ title: t.title, html: t.description || '', media: describeMedia(null), extra: { color: t.color } })) };
     if (Array.isArray(v.order)) // Map Tour (points live in a feature layer)
-      return { label: 'Tour points (order only)', list: pick(v.order, o => ({ title: 'Point ' + o.id, html: '', media: describeMedia(null), extra: { visible: o.visible } })) };
+      // Only the place order and visibility are in the story item. Each place's name, text, photo and
+      // location are features of the tour's layer, which couldn't be read, so they're listed by feature ID.
+      return { label: "Tour places (order only: the tour's layer couldn't be read)", list: pick(v.order, (o, i) => ({
+        title: `Place ${i + 1} (feature ID ${o.id})`, html: '', media: describeMedia(null),
+        extra: { visible: o.visible, details: "name, text, photo and location were stored in the tour's layer, which can't be read" } })) };
     return { label: 'Entries', list: [] };
   }
 
@@ -863,12 +872,13 @@
   // Read an ArcGIS item (a classic story, or a lone web map) into the shared shape
   async function readItem(src, token) {
     log(`Item ID ${src.id}`, 'ok');
-    let item = null, base = null, lastErr = null;
+    let item = null, base = null;
+    const tried = [];
     for (const b of src.bases) {
       try { item = await getJson(`${b}/content/items/${src.id}`, token); base = b; break; }
-      catch (err) { lastErr = err; log(`${new URL(b).host}: ${err.message}`, 'warn'); }
+      catch (err) { tried.push(`${new URL(b).host}: ${err.message}`); } // only reported if every address fails
     }
-    if (!item) throw new Error(`Could not read the item (${lastErr?.message || 'unknown error'}). If the story is private, add an access token under "Private or ArcGIS Enterprise story".`);
+    if (!item) throw new Error(`Could not read the item (${tried.join('; ') || 'unknown error'}). If the story is private, add an access token under "Private or ArcGIS Enterprise story".`);
     log(`Item found on ${new URL(base).host}: "${item.title}" (${item.type})`, 'ok');
     let data = await getJson(`${base}/content/items/${src.id}/data`, token).catch(err => { throw new Error('Item found, but its story data could not be read: ' + err.message); });
     log(`Story data read: ${JSON.stringify(data).length.toLocaleString()} characters of JSON`, 'ok');
@@ -998,6 +1008,4 @@
     catch (_) { const r = document.createRange(); r.selectNodeContents($('text')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); flash('Selected — press Ctrl+C'); }
   });
 
-  // Open in a working state: read the example story straight away
-  run();
 })();

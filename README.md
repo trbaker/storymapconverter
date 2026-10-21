@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="logo.svg" alt="StoryMap Converter icon" width="96" height="96">
+<img src="logo.svg" alt="Classic StoryMap Extractor icon" width="96" height="96">
 
-# StoryMap Converter
+# Classic StoryMap Extractor
 
 **Bring retired classic Esri Story Maps back to life as modern ArcGIS StoryMaps, from ArcGIS Online or self-hosted on any website.**
 
@@ -21,7 +21,7 @@
 
 Esri has retired the classic Story Map templates. Open an old Map Series or Map Journal link today and you get an **Item Replacement** notice instead of the story.
 
-The story itself isn't gone. Its titles, text, images, maps and videos are still stored in the item's data on ArcGIS Online. StoryMap Converter reads that data and rebuilds the story as a new ArcGIS StoryMap in your own account, in a few clicks and without retyping anything.
+The story itself isn't gone. Its titles, text, images, maps and videos are still stored in the item's data on ArcGIS Online. Classic StoryMap Extractor reads that data and rebuilds the story as a new ArcGIS StoryMap in your own account, in a few clicks and without retyping anything.
 
 ## How it works
 
@@ -46,6 +46,7 @@ flowchart LR
 | From the classic story | Becomes in ArcGIS StoryMaps |
 |---|---|
 | Story title and summary | Story cover. The first image found becomes a full-bleed cover. |
+| The classic story's author | The cover byline: the story owner's full name from their public profile, or their username when the profile is private. Self-hosted stories use the owner of their web maps. It's filled in under **Byline**, where you can change it |
 | Each entry or section | A heading and section, or a sidecar slide |
 | Entry image | Image block, copied into the new story when the host allows it |
 | Entry web map | Web map block, keeping that entry's map extent and which layers were on |
@@ -64,7 +65,13 @@ flowchart LR
 | Old web maps (spec 1.x, untyped layers, http:// layers or a Bing basemap, roughly 2012 to 2014) | An updated copy in your account that uses the same data layers, upgraded to the current web map format, and used in the story in place of the original. Bing basemaps become the matching Esri basemaps |
 | Other embedded web page | Embed card |
 | YouTube or Vimeo video | Inline video player. Links point to the normal watch page. |
-| Bold, italics, links, headings, lists, quotes | Native StoryMaps text styles |
+| Bold, italics, links, headings, lists, quotes | Native StoryMaps text styles, keeping centred and right-aligned text |
+| Figure captions in Journal and Series text | Image captions |
+| A map's legend setting (Journal and Series) | The legend shown on the new map block |
+| Cascade image galleries | Gallery blocks (up to 12 images each) |
+| Cascade title sections | A centred heading, with the title's background image floated beside the next section |
+| Cascade credits and attributions | The story's credits area, with linked sources |
+| A dark classic theme | The dark Obsidian theme (otherwise Summit) |
 | Fonts, colours, sizes from the old template | Dropped, so the new story's theme styles the text |
 | Item tags, summary, description, credits | Copied to the new item |
 
@@ -73,6 +80,18 @@ Maps are never copied or turned into pictures. Every map block shows the origina
 **Templates recognised:** Map Series, Map Journal, Cascade, Shortlist, Swipe and Spyglass, Map Tour, Crowdsource, Basic, Countdown and Playlist. Map Series and Map Journal convert entry by entry, and Cascade section by section. Swipe and Spyglass become swipe blocks. Map Tour, Shortlist and Crowdsource become guided tours. Basic opens with its live map, and with its legend when the classic story showed one. For Countdown and Playlist, the text-file export still captures every piece of text in the story, so nothing is lost.
 
 Only what readers could see is converted: hidden Map Series entries, draft Map Journal sections and hidden tour places are left out.
+
+## Compared with Esri's conversion helper
+
+Esri publishes a Python notebook, the *Classic story conversion helper*, for Journal, Series and Cascade stories. This app follows the same conversion choices:
+- Journal and Series become a docked sidecar.
+- Cascade immersive sections become a floating-panel sidecar.
+- Cascade title sections become a centred heading with a floated image.
+- Galleries, credits and attributions, map legends and per-section layer visibility come across.
+- A dark classic theme becomes Obsidian.
+- New stories are tagged as converted (`smconverted:`).
+
+It also covers the templates the notebook doesn't: Map Tour, Shortlist, Crowdsource, Swipe, Basic and self-hosted stories. It keeps classic text links as map actions, updates old web maps, and runs in a browser without Python.
 
 ## Self-hosted classic stories
 
@@ -104,7 +123,7 @@ Maps are rebuilt, never pictured, and their data is always pointed to rather tha
 | A current web map | The same web map, opened at the classic entry's view with the classic layer visibility |
 | An old web map (1.x format, untyped or `http://` layers, a Bing basemap) | An updated copy of the web map in your account, as described below |
 | A web map made only of sketched notes (Map Notes points, lines, areas and text) | An **express map**. Its drawings, popups and groups are written to the story's `expressmap_<ms>.json` file, the same format the StoryMaps builder saves. Its basemap is a copy of the classic web map without the notes |
-| A web map that's deleted or no longer shared | An empty express map at the classic view on a topographic basemap, so the slide still has a working map to redraw the places on. The classic story saved only the map's ID and views, never its data. Untick **Replace maps that can't be read** to keep linking the original instead |
+| A web map that's deleted or no longer shared | A placeholder image saying the map is unavailable, in the same spot. The classic story saved only the map's ID and views, never its data. Untick **Replace maps that can't be read** to keep linking the original instead |
 | A tour's or Shortlist's web map | The guided tour's map: a copy without the places layer, so places aren't drawn twice |
 
 Imported data (CSV, shapefile or GPX layers stored in the map), maps with service layers, multi-part shapes, and maps with more than 200 notes stay traditional web maps, which keep their fields, popups and styles. Untick **Rebuild maps made only of sketched notes as express maps** to keep every map as a web map.
@@ -130,7 +149,7 @@ Maps owned by someone else can't be changed. If one is shared more narrowly than
 
 1. Keep all the files together in one folder.
 2. Open **`index.html`** in Chrome, Edge, Firefox or Safari. Double-clicking it works.
-3. The example story loads straight away. Paste your own classic story link, item ID or self-hosted story address to convert it.
+3. Paste a classic story link, item ID or self-hosted story address, and choose **Read story**.
 
 If an organization restricts which websites may read its content, requests from a desktop file can be refused. Serve the folder from a simple local web server instead:
 
@@ -156,7 +175,7 @@ Or put the folder on any web host, which is also where Google Analytics starts c
 
 - **Your password goes only to ArcGIS Online**, which swaps it for a sign-in token. The token lives in the page's memory and is gone when you close the tab. Nothing is saved to disk.
 - The app talks only to ArcGIS Online, StoryMaps, the website of a self-hosted story you paste, the image hosts the classic story uses, Google Fonts and Google Analytics. There is no other server behind it.
-- A self-hosted story's settings are read as plain data. None of that website's code runs inside the converter.
+- A self-hosted story's settings are read as plain data. None of that website's code runs inside the app.
 
 ## Good to know
 
